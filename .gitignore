@@ -28,6 +28,10 @@ Thumbs.db
 # Logs
 *.log
 
+# Test files (may contain sensitive data)
+json.txt
+testllm.json
+
 # Testing
 .pytest_cache/
 .coverage
