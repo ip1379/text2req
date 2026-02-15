@@ -22,7 +22,11 @@ async def chat_completion(prompt: str, system: str = "", model: str = None) -> s
 
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(url, json=payload, timeout=120)
+            resp = await client.post(url, json=payload, timeout=300)
+            logger.info(f"llm_service:26: Response status code: {resp.status_code}")
+            logger.info(f"llm_service:27: Response headers: {resp.headers}")
+            logger.info(f"llm_service:28: Response content: {resp.text[:200]}...")  # Log first 200 chars of response
+
             resp.raise_for_status()
             data = resp.json()
             result = data["choices"][0]["message"]["content"]

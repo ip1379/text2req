@@ -46,6 +46,28 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 tasks: dict[str, dict] = {}
 
 
+def _extract_json_from_llm_response(response: str) -> str:
+    """Extract and clean JSON from LLM response."""
+    import re
+
+    cleaned = response.strip()
+
+    # Remove markdown code blocks if present
+    if "```" in cleaned:
+        # Try to extract JSON from code block
+        match = re.search(r'```(?:json)?\s*\n(.*?)\n```', cleaned, re.DOTALL)
+        if match:
+            cleaned = match.group(1).strip()
+
+    # Find JSON array or object
+    # Look for patterns like [...] or {...}
+    json_match = re.search(r'(\[.*\]|\{.*\})', cleaned, re.DOTALL)
+    if json_match:
+        cleaned = json_match.group(1)
+
+    return cleaned
+
+
 async def _process_epic(task_id: str, epic_key: str, input_text: str, model: str = None) -> None:
     try:
         logger.info(f"Processing epic {epic_key} with input: {input_text[:100]}...")
@@ -59,15 +81,21 @@ async def _process_epic(task_id: str, epic_key: str, input_text: str, model: str
             "Based on this input, generate a detailed breakdown as a JSON array.\n"
             "Each item should have:\n"
             '- "summary": A clear, concise title (max 100 chars)\n'
-            '- "description": Detailed description with acceptance criteria\n'
-            '- "issue_type": Either "Story", "Task", or "Bug"\n\n'
-            "Return ONLY valid JSON array, no additional text.\n"
+            '- "description": Detailed description with acceptance criteria (use \\n for newlines)\n'
+            '- "issue_type": Must be exactly "Aufgabe"\n\n'
+            "IMPORTANT RULES:\n"
+            "1. Return ONLY a valid JSON array, nothing else\n"
+            "2. Do not wrap in markdown code blocks\n"
+            "3. Use \\n for newlines in descriptions, not actual line breaks\n"
+            "4. Properly escape all special characters\n"
+            "5. Ensure all strings are properly quoted\n"
+            '6. issue_type must ALWAYS be exactly "Aufgabe" (German for Task)\n\n'
             "Example format:\n"
             '[\n'
             '  {\n'
             '    "summary": "Implement user login",\n'
-            '    "description": "As a user, I want to log in...\\n\\nAcceptance Criteria:\\n- ...",\n'
-            '    "issue_type": "Story"\n'
+            '    "description": "As a user, I want to log in...\\n\\nAcceptance Criteria:\\n- Criterion 1\\n- Criterion 2",\n'
+            '    "issue_type": "Aufgabe"\n'
             '  }\n'
             ']'
         )
@@ -76,21 +104,33 @@ async def _process_epic(task_id: str, epic_key: str, input_text: str, model: str
 
         result = await llm_service.chat_completion(
             prompt,
-            system="You are a senior product manager and technical lead. Generate structured, actionable epic breakdowns as valid JSON only.",
+            system="You are a senior product manager and technical lead. Generate structured, actionable epic breakdowns as valid JSON only. You must output ONLY valid JSON - no markdown, no explanations, no code blocks. Use \\n for line breaks in strings.",
             model=model
         )
 
-        logger.info(f"Output from LLM: {result[:100]}")
+        logger.info(f"Output from LLM: {result[:200]}")
+        logger.debug(f"Full LLM output:\n{result}")
 
         # Parse JSON and create Jira issues
         import json
-        issues_data = json.loads(result.strip())
+
+        # Clean and extract JSON from LLM response
+        cleaned_result = _extract_json_from_llm_response(result)
+        logger.info(f"Cleaned result for parsing: {cleaned_result[:200]}")
+
+        try:
+            issues_data = json.loads(cleaned_result)
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parsing error: {e}")
+            logger.error(f"Character at error position: {cleaned_result[max(0, e.pos-20):e.pos+20]}")
+            logger.error(f"Full problematic JSON:\n{cleaned_result}")
+            raise
 
         logger.info(f"Creating {len(issues_data)} Jira issues under epic {epic_key}")
         created_issues = await jira_service.create_bulk_issues(
             project_key=project_key,
             issues_data=issues_data,
-            parent_key=epic_key
+            parent_key=epic_key  # Epic Link enabled with customfield_10100
         )
 
         # Store both the LLM result and created issue keys
